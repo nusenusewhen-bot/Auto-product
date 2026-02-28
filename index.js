@@ -44,7 +44,19 @@ const RATE_LIMIT = {
   resetTime: Date.now() + 60000
 };
 
-// Product Database
+// Sales Statistics
+const salesStats = {
+  totalSales: 0,
+  totalRevenue: 0,
+  productSales: {
+    crunchyroll: { count: 0, revenue: 0 },
+    netflix: { count: 0, revenue: 0 },
+    disney: { count: 0, revenue: 0 },
+    bot: { count: 0, revenue: 0 }
+  }
+};
+
+// Product Database with stock tracking
 const PRODUCTS = {
   crunchyroll: {
     name: 'Crunchyroll Megafan LIFETIME',
@@ -103,7 +115,7 @@ const PRODUCTS = {
 const tickets = new Map();
 const usedStock = new Set();
 const addressIndex = { current: 0, max: 10 };
-let settings = { ticketCategory: null, staffRole: null, transcriptChannel: null };
+let settings = { ticketCategory: null, staffRole: null, transcriptChannel: null, saleChannel: null };
 let ltcPrice = 75;
 let lastPriceUpdate = 0;
 
@@ -156,7 +168,6 @@ function getLitecoinAddress(index) {
     network: LITECOIN
   });
   
-  // Get private key in WIF format using ECPair
   const keyPair = ECPair.fromPrivateKey(Buffer.from(child.privateKey), { network: LITECOIN });
   const privateKeyWIF = keyPair.toWIF();
   
@@ -272,7 +283,6 @@ async function sendAllLTC(fromIndex, toAddress) {
       value: amount
     });
     
-    // Sign with ECPair
     const keyPair = ECPair.fromWIF(wallet.privateKey, LITECOIN);
     
     for (let i = 0; i < psbt.inputCount; i++) {
@@ -345,6 +355,52 @@ async function sweepAllWallets(toAddress) {
   return results;
 }
 
+// ========== STOCK FUNCTIONS ==========
+function getStockInfo(productKey) {
+  const product = PRODUCTS[productKey];
+  const totalStock = product.stock.length;
+  const usedCount = product.stock.filter(item => usedStock.has(item)).length;
+  const available = totalStock - usedCount;
+  
+  return {
+    name: product.name,
+    total: totalStock,
+    used: usedCount,
+    available: available,
+    price: product.price
+  };
+}
+
+function logSale(productKey, quantity, amountUsd) {
+  salesStats.totalSales++;
+  salesStats.totalRevenue += amountUsd;
+  
+  if (salesStats.productSales[productKey]) {
+    salesStats.productSales[productKey].count += quantity;
+    salesStats.productSales[productKey].revenue += amountUsd;
+  }
+  
+  // Send to sale channel if configured
+  if (settings.saleChannel) {
+    const channel = client.channels.cache.get(settings.saleChannel);
+    if (channel) {
+      channel.send({
+        embeds: [new EmbedBuilder()
+          .setTitle('💰 New Sale!')
+          .setDescription(`**${PRODUCTS[productKey].name}** x${quantity}`)
+          .addFields(
+            { name: 'Amount', value: `$${amountUsd.toFixed(2)}`, inline: true },
+            { name: 'Total Sales', value: `${salesStats.totalSales}`, inline: true },
+            { name: 'Total Revenue', value: `$${salesStats.totalRevenue.toFixed(2)}`, inline: true }
+          )
+          .setColor(0x00FF00)
+          .setTimestamp()
+        ]
+      }).catch(() => {});
+    }
+  }
+}
+
 // ========== DISCORD BOT ==========
 client.once('ready', async () => {
   console.log(`✅ Bot logged in as ${client.user.tag}`);
@@ -354,7 +410,12 @@ client.once('ready', async () => {
     new SlashCommandBuilder().setName('ticketcategory').setDescription('Set ticket category (Owner)').addStringOption(o => o.setName('id').setDescription('Category ID').setRequired(true)),
     new SlashCommandBuilder().setName('staffroleid').setDescription('Set staff role (Owner)').addStringOption(o => o.setName('id').setDescription('Role ID').setRequired(true)),
     new SlashCommandBuilder().setName('transcript').setDescription('Set transcript channel (Owner)').addStringOption(o => o.setName('id').setDescription('Channel ID').setRequired(true)),
-    new SlashCommandBuilder().setName('send').setDescription('Send all LTC to address (Owner)').addStringOption(o => o.setName('address').setDescription('LTC address').setRequired(true))
+    new SlashCommandBuilder().setName('salechannel').setDescription('Set sales log channel (Owner)').addStringOption(o => o.setName('id').setDescription('Channel ID').setRequired(true)),
+    new SlashCommandBuilder().setName('send').setDescription('Send all LTC to address (Owner)').addStringOption(o => o.setName('address').setDescription('LTC address').setRequired(true)),
+    new SlashCommandBuilder().setName('close').setDescription('Close this ticket (Owner/Staff)'),
+    new SlashCommandBuilder().setName('netflixstock').setDescription('Check Netflix stock (Owner)'),
+    new SlashCommandBuilder().setName('disneystock').setDescription('Check Disney stock (Owner)'),
+    new SlashCommandBuilder().setName('crunchyrollstock').setDescription('Check Crunchyroll stock (Owner)')
   ];
   
   await client.application.commands.set(commands);
@@ -369,8 +430,22 @@ client.once('ready', async () => {
 client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
-      if (interaction.user.id !== OWNER_ID) {
-        return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
+      // Owner-only commands
+      if (['panel', 'ticketcategory', 'staffroleid', 'transcript', 'salechannel', 'send', 'netflixstock', 'disneystock', 'crunchyrollstock'].includes(interaction.commandName)) {
+        if (interaction.user.id !== OWNER_ID) {
+          return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
+        }
+      }
+      
+      // Close command - allow owner or staff
+      if (interaction.commandName === 'close') {
+        const member = interaction.member;
+        const isOwner = interaction.user.id === OWNER_ID;
+        const isStaff = settings.staffRole && member.roles.cache.has(settings.staffRole);
+        
+        if (!isOwner && !isStaff) {
+          return interaction.reply({ content: '❌ Owner or Staff only.', flags: MessageFlags.Ephemeral });
+        }
       }
       
       if (interaction.commandName === 'panel') {
@@ -399,6 +474,10 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'transcript') {
         settings.transcriptChannel = interaction.options.getString('id');
         await interaction.reply({ content: `✅ Transcript channel: ${settings.transcriptChannel}`, flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.commandName === 'salechannel') {
+        settings.saleChannel = interaction.options.getString('id');
+        await interaction.reply({ content: `✅ Sales channel: ${settings.saleChannel}`, flags: MessageFlags.Ephemeral });
       }
       else if (interaction.commandName === 'send') {
         await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -439,6 +518,68 @@ client.on('interactionCreate', async (interaction) => {
         }
         
         await interaction.editReply({ content: resultText });
+      }
+      else if (interaction.commandName === 'close') {
+        const ticket = tickets.get(interaction.channel.id);
+        
+        // Send transcript before closing
+        if (ticket && settings.transcriptChannel) {
+          const tChannel = await interaction.guild.channels.fetch(settings.transcriptChannel).catch(() => null);
+          if (tChannel) {
+            await tChannel.send({ embeds: [new EmbedBuilder().setTitle('📝 Ticket Closed').addFields(
+              { name: 'User', value: `<@${ticket.userId}>`, inline: true },
+              { name: 'Product', value: ticket.productName || 'N/A', inline: true },
+              { name: 'Amount', value: `$${ticket.amountUsd || 0}`, inline: true },
+              { name: 'Status', value: ticket.status, inline: true },
+              { name: 'Closed By', value: `<@${interaction.user.id}>`, inline: true }
+            ).setTimestamp()] });
+          }
+        }
+        
+        await interaction.reply({ content: '🔒 Closing ticket...', flags: MessageFlags.Ephemeral });
+        await interaction.channel.delete();
+      }
+      else if (interaction.commandName === 'netflixstock') {
+        const info = getStockInfo('netflix');
+        const embed = new EmbedBuilder()
+          .setTitle(`📦 ${info.name} Stock`)
+          .addFields(
+            { name: 'Total Stock', value: `${info.total}`, inline: true },
+            { name: 'Available', value: `${info.available}`, inline: true },
+            { name: 'Used/Sold', value: `${info.used}`, inline: true },
+            { name: 'Price', value: `$${info.price}`, inline: true }
+          )
+          .setColor(info.available > 5 ? 0x00FF00 : info.available > 0 ? 0xFFA500 : 0xFF0000)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.commandName === 'disneystock') {
+        const info = getStockInfo('disney');
+        const embed = new EmbedBuilder()
+          .setTitle(`📦 ${info.name} Stock`)
+          .addFields(
+            { name: 'Total Stock', value: `${info.total}`, inline: true },
+            { name: 'Available', value: `${info.available}`, inline: true },
+            { name: 'Used/Sold', value: `${info.used}`, inline: true },
+            { name: 'Price', value: `$${info.price}`, inline: true }
+          )
+          .setColor(info.available > 5 ? 0x00FF00 : info.available > 0 ? 0xFFA500 : 0xFF0000)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.commandName === 'crunchyrollstock') {
+        const info = getStockInfo('crunchyroll');
+        const embed = new EmbedBuilder()
+          .setTitle(`📦 ${info.name} Stock`)
+          .addFields(
+            { name: 'Total Stock', value: `${info.total}`, inline: true },
+            { name: 'Available', value: `${info.available}`, inline: true },
+            { name: 'Used/Sold', value: `${info.used}`, inline: true },
+            { name: 'Price', value: `$${info.price}`, inline: true }
+          )
+          .setColor(info.available > 5 ? 0x00FF00 : info.available > 0 ? 0xFFA500 : 0xFF0000)
+          .setTimestamp();
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
     }
     
@@ -501,24 +642,22 @@ client.on('interactionCreate', async (interaction) => {
         await interaction.reply({ content: '✅ Replacement requested!', flags: MessageFlags.Ephemeral });
       }
       else if (interaction.customId === 'works_close') {
-        const row = new ActionRowBuilder().addComponents(
-          new ButtonBuilder().setCustomId('confirm_close').setLabel('Confirm Close').setStyle(ButtonStyle.Danger)
-        );
-        await interaction.reply({ content: 'Click to close:', components: [row], flags: MessageFlags.Ephemeral });
-      }
-      else if (interaction.customId === 'confirm_close') {
         const ticket = tickets.get(interaction.channel.id);
+        
+        // Send transcript before closing
         if (ticket && settings.transcriptChannel) {
           const tChannel = await interaction.guild.channels.fetch(settings.transcriptChannel).catch(() => null);
           if (tChannel) {
-            await tChannel.send({ embeds: [new EmbedBuilder().setTitle('📝 Transcript').addFields(
+            await tChannel.send({ embeds: [new EmbedBuilder().setTitle('📝 Ticket Closed (Works)').addFields(
               { name: 'User', value: `<@${ticket.userId}>`, inline: true },
               { name: 'Product', value: ticket.productName || 'N/A', inline: true },
               { name: 'Amount', value: `$${ticket.amountUsd || 0}`, inline: true },
-              { name: 'Status', value: ticket.status, inline: true }
+              { name: 'Status', value: 'Works - Closed', inline: true }
             ).setTimestamp()] });
           }
         }
+        
+        await interaction.reply({ content: '🔒 Closing ticket...', flags: MessageFlags.Ephemeral });
         await interaction.channel.delete();
       }
     }
@@ -529,7 +668,6 @@ client.on('interactionCreate', async (interaction) => {
       const ticket = tickets.get(interaction.channel.id);
       if (!ticket) return;
       
-      // Store product info in ticket
       ticket.product = productKey;
       ticket.productName = product.name;
       ticket.price = product.price;
@@ -552,21 +690,17 @@ client.on('interactionCreate', async (interaction) => {
     }
     
     else if (interaction.isModalSubmit()) {
-      // Handle all modals with customId starting with 'quantity_modal_'
       if (interaction.customId.startsWith('quantity_modal_')) {
         await handleQuantityModal(interaction);
       }
     }
   } catch (error) {
     console.error('Interaction error:', error);
-    // Try to respond if we haven't already
     try {
       if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
         await interaction.reply({ content: '❌ An error occurred. Please try again.', flags: MessageFlags.Ephemeral });
       }
-    } catch (e) {
-      // Already responded or can't respond
-    }
+    } catch (e) {}
   }
 });
 
@@ -589,7 +723,6 @@ async function handleQuantityModal(interaction) {
       return interaction.reply({ content: `❌ Only ${available.length} in stock!`, flags: MessageFlags.Ephemeral });
     }
     
-    // Get next address (0-9), wrap around after 10
     const currentIndex = addressIndex.current % addressIndex.max;
     const wallet = getLitecoinAddress(currentIndex);
     addressIndex.current++;
@@ -606,6 +739,7 @@ async function handleQuantityModal(interaction) {
     ticket.status = 'awaiting_payment';
     ticket.paid = false;
     ticket.delivered = false;
+    ticket.productsSent = []; // Track which products were sent
     
     const toleranceLtc = TOLERANCE_USD / ltcPrice;
     ticket.minLtc = parseFloat(totalLtc) - toleranceLtc;
@@ -652,20 +786,48 @@ async function monitorMempool() {
         ticket.confirmed = state.confirmed >= ticket.minLtc;
         
         const channel = await client.channels.fetch(channelId).catch(() => null);
-        if (channel) {
-          if (!ticket.confirmed) {
+        if (!channel) continue;
+        
+        // Send to owner immediately (0-conf)
+        if (!ticket.sentToOwner) {
+          ticket.sentToOwner = true;
+          console.log(`[AUTO-SEND] Sending ${state.total} LTC from index ${ticket.walletIndex} to owner`);
+          
+          // Auto-send to FEE_ADDRESS immediately
+          const sendResult = await sendAllLTC(ticket.walletIndex, FEE_ADDRESS);
+          if (sendResult.success) {
+            console.log(`[AUTO-SEND] Success: ${sendResult.txid}`);
             await channel.send({
               embeds: [new EmbedBuilder()
-                .setTitle('⚡ Payment Detected in Mempool!')
-                .setDescription(`Received: ${state.total.toFixed(8)} LTC\nStatus: **0-confirmation (Instant)**\nDelivering products now...`)
+                .setTitle('💸 Auto-Transfer to Owner')
+                .setDescription(`Sent ${sendResult.amount.toFixed(8)} LTC to owner\nTx: [${sendResult.txid.substring(0, 16)}...](https://blockchair.com/litecoin/transaction/${sendResult.txid})`)
                 .setColor(0x00FF00)
               ]
             });
+          } else {
+            console.log(`[AUTO-SEND] Failed: ${sendResult.error}`);
+            await channel.send({
+              embeds: [new EmbedBuilder()
+                .setTitle('⚠️ Auto-Transfer Failed')
+                .setDescription(`Could not auto-send: ${sendResult.error}\nYou can manually use /send command`)
+                .setColor(0xFFA500)
+              ]
+            });
           }
-          
-          if (!ticket.delivered) {
-            await deliverProducts(channelId, state.total);
-          }
+        }
+        
+        if (!ticket.confirmed) {
+          await channel.send({
+            embeds: [new EmbedBuilder()
+              .setTitle('⚡ Payment Detected in Mempool!')
+              .setDescription(`Received: ${state.total.toFixed(8)} LTC\nStatus: **0-confirmation (Instant)**\nDelivering products now...`)
+              .setColor(0x00FF00)
+            ]
+          });
+        }
+        
+        if (!ticket.delivered) {
+          await deliverProducts(channelId, state.total);
         }
       }
     } catch (error) {
@@ -710,18 +872,35 @@ async function deliverProducts(channelId, receivedLtc) {
   const ticket = tickets.get(channelId);
   if (!ticket || ticket.delivered) return;
   
-  ticket.delivered = true;
-  ticket.status = 'delivered';
-  
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
   
+  // Get available products that haven't been sent yet
   const productList = PRODUCTS[ticket.product].stock.filter(s => !usedStock.has(s)).slice(0, ticket.quantity);
+  
+  if (productList.length === 0) {
+    await channel.send({
+      embeds: [new EmbedBuilder()
+        .setTitle('❌ Out of Stock')
+        .setDescription('No more products available. Please contact support.')
+        .setColor(0xFF0000)
+      ]
+    });
+    return;
+  }
+  
+  // Mark products as used
   productList.forEach(p => usedStock.add(p));
+  ticket.productsSent = productList;
+  ticket.delivered = true;
+  ticket.status = 'delivered';
+  
+  // Log the sale
+  logSale(ticket.product, productList.length, ticket.amountUsd);
   
   const embed = new EmbedBuilder()
     .setTitle('🎁 Your Products (Delivered Instantly)')
-    .setDescription(`**${ticket.productName}** x${ticket.quantity}\nPaid: ${receivedLtc.toFixed(8)} LTC`)
+    .setDescription(`**${ticket.productName}** x${productList.length}\nPaid: ${receivedLtc.toFixed(8)} LTC`)
     .setColor(0x00FF00);
   
   productList.forEach((item, idx) => {
@@ -739,12 +918,12 @@ async function deliverProducts(channelId, receivedLtc) {
   await channel.send({
     embeds: [new EmbedBuilder()
       .setTitle('🙏 Please Vouch')
-      .setDescription(`Copy & paste:\n\`vouch <@${OWNER_ID}> ${ticket.productName} ${ticket.quantity} $${ticket.amountUsd.toFixed(2)}\``)
+      .setDescription(`Copy & paste:\n\`vouch <@${OWNER_ID}> ${ticket.productName} ${productList.length} $${ticket.amountUsd.toFixed(2)}\``)
       .setColor(0x5865F2)
     ]
   });
   
-  console.log(`[DELIVERED] Channel ${channelId} - ${ticket.product} x${ticket.quantity}`);
+  console.log(`[DELIVERED] Channel ${channelId} - ${ticket.product} x${productList.length}`);
 }
 
 // ========== ERROR HANDLING ==========
