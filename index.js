@@ -301,18 +301,19 @@ async function sendAllLTC(fromIndex, toAddress) {
 async function sweepAllWallets(toAddress) {
   const results = [];
   
-  for (let i = 0; i < addressIndex.current; i++) {
+  // Scan indices 0-100 to find ANY wallet with balance
+  for (let i = 0; i <= 100; i++) {
     try {
       const wallet = getLitecoinAddress(i);
       const state = await getAddressState(wallet.address);
       
-      if (state.confirmed > 0.001) {
-        console.log(`[SWEEP] Sweeping index ${i} (${wallet.address}) - ${state.confirmed} LTC`);
+      if (state.confirmed > 0.001) { // Minimum 0.001 LTC to sweep
+        console.log(`[SWEEP] Found balance at index ${i} (${wallet.address}) - ${state.confirmed} LTC`);
         const result = await sendAllLTC(i, toAddress);
         results.push({ index: i, address: wallet.address, ...result });
         
         if (result.success) {
-          await new Promise(r => setTimeout(r, 2000));
+          await new Promise(r => setTimeout(r, 2000)); // Delay between sweeps
         }
       }
     } catch (e) {
@@ -388,7 +389,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: '❌ Invalid Litecoin address!' });
       }
       
-      await interaction.editReply({ content: '🔄 Sweeping all wallets... This may take a moment.' });
+      await interaction.editReply({ content: '🔄 Scanning all wallet indices (0-100) for balance... This may take a moment.' });
       
       const results = await sweepAllWallets(address);
       
@@ -412,7 +413,7 @@ client.on('interactionCreate', async (interaction) => {
         }
         if (results.length > 5) resultText += `... and ${results.length - 5} more`;
       } else {
-        resultText += `No wallets with balance found.`;
+        resultText += `No wallets with balance found in indices 0-100.`;
       }
       
       await interaction.editReply({ content: resultText });
