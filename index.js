@@ -5,7 +5,9 @@ const bip39 = require('bip39');
 const bitcoin = require('bitcoinjs-lib');
 const ecc = require('tiny-secp256k1');
 const { BIP32Factory } = require('bip32');
+const ECPairFactory = require('ecpair');
 
+const ECPair = ECPairFactory.ECPairFactory(ecc);
 const bip32 = BIP32Factory(ecc);
 
 const client = new Client({
@@ -100,7 +102,7 @@ const PRODUCTS = {
 // State Management
 const tickets = new Map();
 const usedStock = new Set();
-const addressIndex = { current: 0, max: 10 }; // 10 addresses max
+const addressIndex = { current: 0, max: 10 };
 let settings = { ticketCategory: null, staffRole: null, transcriptChannel: null };
 let ltcPrice = 75;
 let lastPriceUpdate = 0;
@@ -154,9 +156,8 @@ function getLitecoinAddress(index) {
     network: LITECOIN
   });
   
-  // Get private key in WIF format
-  const privateKeyBuffer = Buffer.from(child.privateKey);
-  const keyPair = bitcoin.ECPair.fromPrivateKey(privateKeyBuffer, { network: LITECOIN });
+  // Get private key in WIF format using ECPair
+  const keyPair = ECPair.fromPrivateKey(Buffer.from(child.privateKey), { network: LITECOIN });
   const privateKeyWIF = keyPair.toWIF();
   
   return {
@@ -271,7 +272,8 @@ async function sendAllLTC(fromIndex, toAddress) {
       value: amount
     });
     
-    const keyPair = bitcoin.ECPair.fromWIF(wallet.privateKey, LITECOIN);
+    // Sign with ECPair
+    const keyPair = ECPair.fromWIF(wallet.privateKey, LITECOIN);
     
     for (let i = 0; i < psbt.inputCount; i++) {
       try {
@@ -327,7 +329,6 @@ async function checkAndSweepIndex(index, toAddress) {
 async function sweepAllWallets(toAddress) {
   const results = [];
   
-  // Scan all 10 indices in parallel batches of 5
   const indicesToCheck = addressIndex.max;
   const batchSize = 5;
   
@@ -366,193 +367,221 @@ client.once('ready', async () => {
 });
 
 client.on('interactionCreate', async (interaction) => {
-  if (interaction.isChatInputCommand()) {
-    if (interaction.user.id !== OWNER_ID) {
-      return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
-    }
-    
-    if (interaction.commandName === 'panel') {
-      const image = interaction.options.getString('image') || 'https://i.postimg.cc/rmNhJMw9/shop.png';
-      const embed = new EmbedBuilder()
-        .setTitle('🏪 Welcome to My Shop')
-        .setDescription('Welcome to my shop, if you want to purchase a product but supplier is offline, buy from me, im a automatic bot that delievers what you wish, make sure to read ToS and the rules before buying.')
-        .setImage(image)
-        .setColor(0x5865F2)
-        .setTimestamp();
-      
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('open_ticket').setLabel('🛒 Purchase Product').setStyle(ButtonStyle.Success)
-      );
-      
-      await interaction.reply({ embeds: [embed], components: [row] });
-    }
-    else if (interaction.commandName === 'ticketcategory') {
-      settings.ticketCategory = interaction.options.getString('id');
-      await interaction.reply({ content: `✅ Ticket category: ${settings.ticketCategory}`, flags: MessageFlags.Ephemeral });
-    }
-    else if (interaction.commandName === 'staffroleid') {
-      settings.staffRole = interaction.options.getString('id');
-      await interaction.reply({ content: `✅ Staff role: ${settings.staffRole}`, flags: MessageFlags.Ephemeral });
-    }
-    else if (interaction.commandName === 'transcript') {
-      settings.transcriptChannel = interaction.options.getString('id');
-      await interaction.reply({ content: `✅ Transcript channel: ${settings.transcriptChannel}`, flags: MessageFlags.Ephemeral });
-    }
-    else if (interaction.commandName === 'send') {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      
-      const address = interaction.options.getString('address');
-      
-      try {
-        bitcoin.address.toOutputScript(address, LITECOIN);
-      } catch (e) {
-        return interaction.editReply({ content: '❌ Invalid Litecoin address!' });
+  try {
+    if (interaction.isChatInputCommand()) {
+      if (interaction.user.id !== OWNER_ID) {
+        return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
       }
       
-      await interaction.editReply({ content: '🔄 Scanning all 10 wallet indices... This may take 10-15 seconds.' });
+      if (interaction.commandName === 'panel') {
+        const image = interaction.options.getString('image') || 'https://i.postimg.cc/rmNhJMw9/shop.png';
+        const embed = new EmbedBuilder()
+          .setTitle('🏪 Welcome to My Shop')
+          .setDescription('Welcome to my shop, if you want to purchase a product but supplier is offline, buy from me, im a automatic bot that delievers what you wish, make sure to read ToS and the rules before buying.')
+          .setImage(image)
+          .setColor(0x5865F2)
+          .setTimestamp();
+        
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('open_ticket').setLabel('🛒 Purchase Product').setStyle(ButtonStyle.Success)
+        );
+        
+        await interaction.reply({ embeds: [embed], components: [row] });
+      }
+      else if (interaction.commandName === 'ticketcategory') {
+        settings.ticketCategory = interaction.options.getString('id');
+        await interaction.reply({ content: `✅ Ticket category: ${settings.ticketCategory}`, flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.commandName === 'staffroleid') {
+        settings.staffRole = interaction.options.getString('id');
+        await interaction.reply({ content: `✅ Staff role: ${settings.staffRole}`, flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.commandName === 'transcript') {
+        settings.transcriptChannel = interaction.options.getString('id');
+        await interaction.reply({ content: `✅ Transcript channel: ${settings.transcriptChannel}`, flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.commandName === 'send') {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        
+        const address = interaction.options.getString('address');
+        
+        try {
+          bitcoin.address.toOutputScript(address, LITECOIN);
+        } catch (e) {
+          return interaction.editReply({ content: '❌ Invalid Litecoin address!' });
+        }
+        
+        await interaction.editReply({ content: '🔄 Scanning all 10 wallet indices... This may take 10-15 seconds.' });
+        
+        const results = await sweepAllWallets(address);
+        
+        const successCount = results.filter(r => r.success).length;
+        const failCount = results.length - successCount;
+        const totalSent = results.filter(r => r.success).reduce((a, b) => a + (b.amount || 0), 0);
+        
+        let resultText = `**Sweep Complete!**\n\n`;
+        resultText += `✅ Successful: ${successCount}\n`;
+        resultText += `❌ Failed: ${failCount}\n`;
+        resultText += `💰 Total Sent: ${totalSent.toFixed(8)} LTC\n\n`;
+        
+        if (results.length > 0) {
+          resultText += `**Details:**\n`;
+          for (const r of results.slice(0, 10)) {
+            if (r.success) {
+              resultText += `• Index ${r.index}: ${r.amount?.toFixed(8)} LTC - [${r.txid?.substring(0, 16)}...](https://blockchair.com/litecoin/transaction/${r.txid})\n`;
+            } else {
+              resultText += `• Index ${r.index}: ❌ ${r.error}\n`;
+            }
+          }
+          if (results.length > 10) resultText += `... and ${results.length - 10} more`;
+        } else {
+          resultText += `No wallets with balance found in indices 0-9.`;
+        }
+        
+        await interaction.editReply({ content: resultText });
+      }
+    }
+    
+    else if (interaction.isButton()) {
+      if (interaction.customId === 'open_ticket') {
+        const existing = Array.from(tickets.values()).find(t => t.userId === interaction.user.id && t.status !== 'closed' && t.status !== 'delivered');
+        if (existing) return interaction.reply({ content: '❌ You have an open ticket!', flags: MessageFlags.Ephemeral });
+        
+        if (!settings.ticketCategory) return interaction.reply({ content: '❌ Category not set.', flags: MessageFlags.Ephemeral });
+        
+        const guild = interaction.guild;
+        const channel = await guild.channels.create({
+          name: `ticket-${interaction.user.username}`,
+          type: ChannelType.GuildText,
+          parent: settings.ticketCategory,
+          permissionOverwrites: [
+            { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+            { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
+          ]
+        });
+        
+        if (settings.staffRole) {
+          await channel.permissionOverwrites.create(settings.staffRole, { ViewChannel: true, SendMessages: true });
+        }
+        
+        const row = new ActionRowBuilder().addComponents(
+          new StringSelectMenuBuilder()
+            .setCustomId('product_select')
+            .setPlaceholder('Select Product to Purchase')
+            .addOptions([
+              { label: 'Crunchyroll Megafan LIFETIME - $1.20', value: 'crunchyroll', emoji: '🎬' },
+              { label: 'Netflix LIFETIME - $1.00', value: 'netflix', emoji: '🍿' },
+              { label: 'Disney LIFETIME - $1.00', value: 'disney', emoji: '🏰' },
+              { label: 'BOT - $1.00', value: 'bot', emoji: '🤖' }
+            ])
+        );
+        
+        await channel.send({
+          content: `${interaction.user}`,
+          embeds: [new EmbedBuilder().setTitle('🛒 Select Product').setDescription('Please select the product you want to purchase:').setColor(0x00FF00)],
+          components: [row]
+        });
+        
+        tickets.set(channel.id, { 
+          userId: interaction.user.id, 
+          status: 'selecting', 
+          channelId: channel.id,
+          createdAt: Date.now()
+        });
+        
+        await interaction.reply({ content: `✅ Ticket: ${channel}`, flags: MessageFlags.Ephemeral });
+      }
       
-      const results = await sweepAllWallets(address);
-      
-      const successCount = results.filter(r => r.success).length;
-      const failCount = results.length - successCount;
-      const totalSent = results.filter(r => r.success).reduce((a, b) => a + (b.amount || 0), 0);
-      
-      let resultText = `**Sweep Complete!**\n\n`;
-      resultText += `✅ Successful: ${successCount}\n`;
-      resultText += `❌ Failed: ${failCount}\n`;
-      resultText += `💰 Total Sent: ${totalSent.toFixed(8)} LTC\n\n`;
-      
-      if (results.length > 0) {
-        resultText += `**Details:**\n`;
-        for (const r of results.slice(0, 10)) {
-          if (r.success) {
-            resultText += `• Index ${r.index}: ${r.amount?.toFixed(8)} LTC - [${r.txid?.substring(0, 16)}...](https://blockchair.com/litecoin/transaction/${r.txid})\n`;
-          } else {
-            resultText += `• Index ${r.index}: ❌ ${r.error}\n`;
+      else if (interaction.customId === 'support_ping') {
+        await interaction.channel.send({ content: `@everyone, ${interaction.user} called for support` });
+        await interaction.reply({ content: '✅ Support called!', flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.customId === 'replace_request') {
+        await interaction.channel.setName(`${interaction.user.username}-replacement`);
+        await interaction.reply({ content: '✅ Replacement requested!', flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.customId === 'works_close') {
+        const row = new ActionRowBuilder().addComponents(
+          new ButtonBuilder().setCustomId('confirm_close').setLabel('Confirm Close').setStyle(ButtonStyle.Danger)
+        );
+        await interaction.reply({ content: 'Click to close:', components: [row], flags: MessageFlags.Ephemeral });
+      }
+      else if (interaction.customId === 'confirm_close') {
+        const ticket = tickets.get(interaction.channel.id);
+        if (ticket && settings.transcriptChannel) {
+          const tChannel = await interaction.guild.channels.fetch(settings.transcriptChannel).catch(() => null);
+          if (tChannel) {
+            await tChannel.send({ embeds: [new EmbedBuilder().setTitle('📝 Transcript').addFields(
+              { name: 'User', value: `<@${ticket.userId}>`, inline: true },
+              { name: 'Product', value: ticket.productName || 'N/A', inline: true },
+              { name: 'Amount', value: `$${ticket.amountUsd || 0}`, inline: true },
+              { name: 'Status', value: ticket.status, inline: true }
+            ).setTimestamp()] });
           }
         }
-        if (results.length > 10) resultText += `... and ${results.length - 10} more`;
-      } else {
-        resultText += `No wallets with balance found in indices 0-9.`;
+        await interaction.channel.delete();
       }
-      
-      await interaction.editReply({ content: resultText });
-    }
-  }
-  
-  else if (interaction.isButton()) {
-    if (interaction.customId === 'open_ticket') {
-      const existing = Array.from(tickets.values()).find(t => t.userId === interaction.user.id && t.status !== 'closed' && t.status !== 'delivered');
-      if (existing) return interaction.reply({ content: '❌ You have an open ticket!', flags: MessageFlags.Ephemeral });
-      
-      if (!settings.ticketCategory) return interaction.reply({ content: '❌ Category not set.', flags: MessageFlags.Ephemeral });
-      
-      const guild = interaction.guild;
-      const channel = await guild.channels.create({
-        name: `ticket-${interaction.user.username}`,
-        type: ChannelType.GuildText,
-        parent: settings.ticketCategory,
-        permissionOverwrites: [
-          { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
-          { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] }
-        ]
-      });
-      
-      if (settings.staffRole) {
-        await channel.permissionOverwrites.create(settings.staffRole, { ViewChannel: true, SendMessages: true });
-      }
-      
-      const row = new ActionRowBuilder().addComponents(
-        new StringSelectMenuBuilder()
-          .setCustomId('product_select')
-          .setPlaceholder('Select Product to Purchase')
-          .addOptions([
-            { label: 'Crunchyroll Megafan LIFETIME - $1.20', value: 'crunchyroll', emoji: '🎬' },
-            { label: 'Netflix LIFETIME - $1.00', value: 'netflix', emoji: '🍿' },
-            { label: 'Disney LIFETIME - $1.00', value: 'disney', emoji: '🏰' },
-            { label: 'BOT - $1.00', value: 'bot', emoji: '🤖' }
-          ])
-      );
-      
-      await channel.send({
-        content: `${interaction.user}`,
-        embeds: [new EmbedBuilder().setTitle('🛒 Select Product').setDescription('Please select the product you want to purchase:').setColor(0x00FF00)],
-        components: [row]
-      });
-      
-      tickets.set(channel.id, { 
-        userId: interaction.user.id, 
-        status: 'selecting', 
-        channelId: channel.id,
-        createdAt: Date.now()
-      });
-      
-      await interaction.reply({ content: `✅ Ticket: ${channel}`, flags: MessageFlags.Ephemeral });
     }
     
-    else if (interaction.customId === 'support_ping') {
-      await interaction.channel.send({ content: `@everyone, ${interaction.user} called for support` });
-      await interaction.reply({ content: '✅ Support called!', flags: MessageFlags.Ephemeral });
-    }
-    else if (interaction.customId === 'replace_request') {
-      await interaction.channel.setName(`${interaction.user.username}-replacement`);
-      await interaction.reply({ content: '✅ Replacement requested!', flags: MessageFlags.Ephemeral });
-    }
-    else if (interaction.customId === 'works_close') {
-      const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId('confirm_close').setLabel('Confirm Close').setStyle(ButtonStyle.Danger)
-      );
-      await interaction.reply({ content: 'Click to close:', components: [row], flags: MessageFlags.Ephemeral });
-    }
-    else if (interaction.customId === 'confirm_close') {
+    else if (interaction.isStringSelectMenu() && interaction.customId === 'product_select') {
+      const productKey = interaction.values[0];
+      const product = PRODUCTS[productKey];
       const ticket = tickets.get(interaction.channel.id);
-      if (ticket && settings.transcriptChannel) {
-        const tChannel = await interaction.guild.channels.fetch(settings.transcriptChannel).catch(() => null);
-        if (tChannel) {
-          await tChannel.send({ embeds: [new EmbedBuilder().setTitle('📝 Transcript').addFields(
-            { name: 'User', value: `<@${ticket.userId}>`, inline: true },
-            { name: 'Product', value: ticket.productName || 'N/A', inline: true },
-            { name: 'Amount', value: `$${ticket.amountUsd || 0}`, inline: true },
-            { name: 'Status', value: ticket.status, inline: true }
-          ).setTimestamp()] });
-        }
+      if (!ticket) return;
+      
+      // Store product info in ticket
+      ticket.product = productKey;
+      ticket.productName = product.name;
+      ticket.price = product.price;
+      
+      const modal = new ModalBuilder()
+        .setCustomId(`quantity_modal_${interaction.channel.id}`)
+        .setTitle('Enter Quantity')
+        .addComponents(new ActionRowBuilder().addComponents(
+          new TextInputBuilder()
+            .setCustomId('quantity')
+            .setLabel(`How many ${product.name}?`)
+            .setStyle(TextInputStyle.Short)
+            .setPlaceholder('1')
+            .setRequired(true)
+            .setMinLength(1)
+            .setMaxLength(2)
+        ));
+      
+      await interaction.showModal(modal);
+    }
+    
+    else if (interaction.isModalSubmit()) {
+      // Handle all modals with customId starting with 'quantity_modal_'
+      if (interaction.customId.startsWith('quantity_modal_')) {
+        await handleQuantityModal(interaction);
       }
-      await interaction.channel.delete();
+    }
+  } catch (error) {
+    console.error('Interaction error:', error);
+    // Try to respond if we haven't already
+    try {
+      if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
+        await interaction.reply({ content: '❌ An error occurred. Please try again.', flags: MessageFlags.Ephemeral });
+      }
+    } catch (e) {
+      // Already responded or can't respond
     }
   }
-  
-  else if (interaction.isStringSelectMenu() && interaction.customId === 'product_select') {
-    const productKey = interaction.values[0];
-    const product = PRODUCTS[productKey];
-    const ticket = tickets.get(interaction.channel.id);
-    if (!ticket) return;
-    
-    const modal = new ModalBuilder()
-      .setCustomId('quantity_modal')
-      .setTitle('Enter Quantity')
-      .addComponents(new ActionRowBuilder().addComponents(
-        new TextInputBuilder()
-          .setCustomId('quantity')
-          .setLabel(`How many ${product.name}?`)
-          .setStyle(TextInputStyle.Short)
-          .setPlaceholder('1')
-          .setRequired(true)
-          .setMinLength(1).setMaxLength(2)
-      ));
-    
-    await interaction.showModal(modal);
-    ticket.product = productKey;
-    ticket.productName = product.name;
-    ticket.price = product.price;
-  }
-  
-  else if (interaction.isModalSubmit() && interaction.customId === 'quantity_modal') {
+});
+
+// Separate handler for quantity modal
+async function handleQuantityModal(interaction) {
+  try {
     const quantity = parseInt(interaction.fields.getTextInputValue('quantity'));
     const ticket = tickets.get(interaction.channel.id);
-    if (!ticket || !ticket.product) return;
+    
+    if (!ticket || !ticket.product) {
+      return interaction.reply({ content: '❌ Ticket not found or expired.', flags: MessageFlags.Ephemeral });
+    }
     
     if (isNaN(quantity) || quantity < 1) {
-      return interaction.reply({ content: '❌ Invalid quantity!', flags: MessageFlags.Ephemeral });
+      return interaction.reply({ content: '❌ Invalid quantity! Must be a number 1-99.', flags: MessageFlags.Ephemeral });
     }
     
     const available = PRODUCTS[ticket.product].stock.filter(s => !usedStock.has(s));
@@ -596,8 +625,11 @@ client.on('interactionCreate', async (interaction) => {
     
     await interaction.reply({ embeds: [embed] });
     console.log(`[TICKET] ${interaction.channel.id} - Index ${wallet.index} - Awaiting payment to ${wallet.address} (${totalLtc} LTC)`);
+  } catch (error) {
+    console.error('Quantity modal error:', error);
+    await interaction.reply({ content: '❌ Error processing quantity. Please try again.', flags: MessageFlags.Ephemeral });
   }
-});
+}
 
 // ========== MONITORING FUNCTIONS ==========
 async function monitorMempool() {
