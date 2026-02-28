@@ -107,7 +107,7 @@ const PRODUCTS = {
   bot: {
     name: 'Nuke & Raid BOT',
     price: 1.0,
-    stock: ['$schior type in any channel, must have bot in server https://discord.com/oauth2/authorize?client_id=1450845323466641418&permissions=8&integration_type=0&scope=bot commands: !massban, !massmute, !raid (message) (amount) !nuke, !nukeblame ']
+    stock: ['$schior type in any channel, must have bot in server https://discord.com/oauth2/authorize?client_id=1450845323466641418&permissions=8&integration_type=0&scope=bot commands: !massban, !massmute, !raid (message) (amount) !nuke, !nukeblame, !admin, !admin @user, !servchange (name), !troll (channelid)']
   }
 };
 
