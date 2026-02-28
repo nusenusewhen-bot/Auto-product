@@ -100,7 +100,7 @@ const PRODUCTS = {
 // State Management
 const tickets = new Map();
 const usedStock = new Set();
-const addressIndex = { current: 0 };
+const addressIndex = { current: 0, max: 10 }; // 10 addresses max
 let settings = { ticketCategory: null, staffRole: null, transcriptChannel: null };
 let ltcPrice = 75;
 let lastPriceUpdate = 0;
@@ -140,6 +140,11 @@ async function makeApiRequest(url, priority = false) {
 
 // ========== HD WALLET ==========
 function getLitecoinAddress(index) {
+  if (index >= addressIndex.max) {
+    console.log(`[WALLET] Index ${index} exceeds max ${addressIndex.max}, wrapping to 0`);
+    index = index % addressIndex.max;
+  }
+  
   const seed = bip39.mnemonicToSeedSync(BOT_MNEMONIC);
   const root = bip32.fromSeed(seed, LITECOIN);
   const child = root.derivePath(`m/44'/2'/0'/0/${index}`);
@@ -149,9 +154,14 @@ function getLitecoinAddress(index) {
     network: LITECOIN
   });
   
+  // Get private key in WIF format
+  const privateKeyBuffer = Buffer.from(child.privateKey);
+  const keyPair = bitcoin.ECPair.fromPrivateKey(privateKeyBuffer, { network: LITECOIN });
+  const privateKeyWIF = keyPair.toWIF();
+  
   return {
     address: address,
-    privateKey: child.toWIF(),
+    privateKey: privateKeyWIF,
     index: index
   };
 }
@@ -317,8 +327,8 @@ async function checkAndSweepIndex(index, toAddress) {
 async function sweepAllWallets(toAddress) {
   const results = [];
   
-  // Scan first 20 indices in parallel batches of 5
-  const indicesToCheck = 20;
+  // Scan all 10 indices in parallel batches of 5
+  const indicesToCheck = addressIndex.max;
   const batchSize = 5;
   
   for (let batchStart = 0; batchStart < indicesToCheck; batchStart += batchSize) {
@@ -399,7 +409,7 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply({ content: '❌ Invalid Litecoin address!' });
       }
       
-      await interaction.editReply({ content: '🔄 Scanning wallet indices 0-20 (fast parallel scan)... This may take 10-15 seconds.' });
+      await interaction.editReply({ content: '🔄 Scanning all 10 wallet indices... This may take 10-15 seconds.' });
       
       const results = await sweepAllWallets(address);
       
@@ -414,16 +424,16 @@ client.on('interactionCreate', async (interaction) => {
       
       if (results.length > 0) {
         resultText += `**Details:**\n`;
-        for (const r of results.slice(0, 5)) {
+        for (const r of results.slice(0, 10)) {
           if (r.success) {
             resultText += `• Index ${r.index}: ${r.amount?.toFixed(8)} LTC - [${r.txid?.substring(0, 16)}...](https://blockchair.com/litecoin/transaction/${r.txid})\n`;
           } else {
             resultText += `• Index ${r.index}: ❌ ${r.error}\n`;
           }
         }
-        if (results.length > 5) resultText += `... and ${results.length - 5} more`;
+        if (results.length > 10) resultText += `... and ${results.length - 10} more`;
       } else {
-        resultText += `No wallets with balance found in indices 0-20.`;
+        resultText += `No wallets with balance found in indices 0-9.`;
       }
       
       await interaction.editReply({ content: resultText });
@@ -550,7 +560,11 @@ client.on('interactionCreate', async (interaction) => {
       return interaction.reply({ content: `❌ Only ${available.length} in stock!`, flags: MessageFlags.Ephemeral });
     }
     
-    const wallet = getLitecoinAddress(addressIndex.current++);
+    // Get next address (0-9), wrap around after 10
+    const currentIndex = addressIndex.current % addressIndex.max;
+    const wallet = getLitecoinAddress(currentIndex);
+    addressIndex.current++;
+    
     const totalUsd = ticket.price * quantity;
     const totalLtc = (totalUsd / ltcPrice).toFixed(8);
     
@@ -574,13 +588,14 @@ client.on('interactionCreate', async (interaction) => {
       .addFields(
         { name: '📋 LTC Address (Copy)', value: `\`${wallet.address}\`` },
         { name: '💰 Amount (±$0.10 OK)', value: `\`${totalLtc} LTC\`` },
-        { name: '⚡ Detection', value: 'INSTANT (0-confirmation)' }
+        { name: '⚡ Detection', value: 'INSTANT (0-confirmation)' },
+        { name: '🔢 Address Index', value: `${wallet.index}/10` }
       )
       .setColor(0xFFD700)
       .setFooter({ text: 'Send LTC now. Bot detects instantly and delivers in 10-30 seconds!' });
     
     await interaction.reply({ embeds: [embed] });
-    console.log(`[TICKET] ${interaction.channel.id} - Awaiting payment to ${wallet.address} (${totalLtc} LTC)`);
+    console.log(`[TICKET] ${interaction.channel.id} - Index ${wallet.index} - Awaiting payment to ${wallet.address} (${totalLtc} LTC)`);
   }
 });
 
