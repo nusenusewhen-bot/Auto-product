@@ -20,7 +20,7 @@ const client = new Client({
 });
 
 // ========== CONFIGURATION ==========
-const OWNER_ID = process.env.OWNER_ID;
+const OWNER_ID = '1459833646130401429';
 const FEE_ADDRESS = process.env.FEE_ADDRESS;
 const BLOCKCHAIR_KEY = process.env.BLOCKCHAIR_KEY;
 const BOT_MNEMONIC = process.env.BOT_MNEMONIC;
@@ -51,12 +51,11 @@ const salesStats = {
   productSales: {
     crunchyroll: { count: 0, revenue: 0 },
     netflix: { count: 0, revenue: 0 },
-    disney: { count: 0, revenue: 0 },
-    bot: { count: 0, revenue: 0 }
+    disney: { count: 0, revenue: 0 }
   }
 };
 
-// Product Database with stock tracking
+// Product Database with stock tracking (NO BOT)
 const PRODUCTS = {
   crunchyroll: {
     name: 'Crunchyroll Megafan LIFETIME',
@@ -103,11 +102,6 @@ const PRODUCTS = {
       'israeldeandrade.uba@gmail.com:131227ra', 'jackliang218@gmail.com:J@ckinthebox7',
       'lbleobatista@gmail.com:Genex1996@@'
     ]
-  },
-  bot: {
-    name: 'Nuke & Raid BOT',
-    price: 1.0,
-    stock: ['$schior type in any channel, must have bot in server https://discord.com/oauth2/authorize?client_id=1450845323466641418&permissions=8&integration_type=0&scope=bot commands: !massban, !massmute, !raid (message) (amount) !nuke, !nukeblame, !admin, !admin @user, !servchange (name), !troll (channelid)']
   }
 };
 
@@ -380,7 +374,6 @@ function logSale(productKey, quantity, amountUsd) {
     salesStats.productSales[productKey].revenue += amountUsd;
   }
   
-  // Send to sale channel if configured
   if (settings.saleChannel) {
     const channel = client.channels.cache.get(settings.saleChannel);
     if (channel) {
@@ -415,7 +408,8 @@ client.once('ready', async () => {
     new SlashCommandBuilder().setName('close').setDescription('Close this ticket (Owner/Staff)'),
     new SlashCommandBuilder().setName('netflixstock').setDescription('Check Netflix stock (Owner)'),
     new SlashCommandBuilder().setName('disneystock').setDescription('Check Disney stock (Owner)'),
-    new SlashCommandBuilder().setName('crunchyrollstock').setDescription('Check Crunchyroll stock (Owner)')
+    new SlashCommandBuilder().setName('crunchyrollstock').setDescription('Check Crunchyroll stock (Owner)'),
+    new SlashCommandBuilder().setName('oauth2').setDescription('Get bot invite link (Owner)')
   ];
   
   await client.application.commands.set(commands);
@@ -431,7 +425,7 @@ client.on('interactionCreate', async (interaction) => {
   try {
     if (interaction.isChatInputCommand()) {
       // Owner-only commands
-      if (['panel', 'ticketcategory', 'staffroleid', 'transcript', 'salechannel', 'send', 'netflixstock', 'disneystock', 'crunchyrollstock'].includes(interaction.commandName)) {
+      if (['panel', 'ticketcategory', 'staffroleid', 'transcript', 'salechannel', 'send', 'netflixstock', 'disneystock', 'crunchyrollstock', 'oauth2'].includes(interaction.commandName)) {
         if (interaction.user.id !== OWNER_ID) {
           return interaction.reply({ content: '❌ Owner only.', flags: MessageFlags.Ephemeral });
         }
@@ -522,7 +516,6 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.commandName === 'close') {
         const ticket = tickets.get(interaction.channel.id);
         
-        // Send transcript before closing
         if (ticket && settings.transcriptChannel) {
           const tChannel = await interaction.guild.channels.fetch(settings.transcriptChannel).catch(() => null);
           if (tChannel) {
@@ -581,6 +574,22 @@ client.on('interactionCreate', async (interaction) => {
           .setTimestamp();
         await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
       }
+      else if (interaction.commandName === 'oauth2') {
+        const botId = client.user.id;
+        const inviteLink = `https://discord.com/oauth2/authorize?client_id=${botId}&permissions=8&scope=bot%20applications.commands`;
+        
+        const embed = new EmbedBuilder()
+          .setTitle('🤖 Bot Invite Link')
+          .setDescription(`Click below to invite ${client.user.username} to your server:`)
+          .addFields(
+            { name: 'Invite URL', value: `[Click Here to Invite](${inviteLink})` },
+            { name: 'Bot ID', value: botId }
+          )
+          .setColor(0x5865F2)
+          .setTimestamp();
+        
+        await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral });
+      }
     }
     
     else if (interaction.isButton()) {
@@ -605,6 +614,7 @@ client.on('interactionCreate', async (interaction) => {
           await channel.permissionOverwrites.create(settings.staffRole, { ViewChannel: true, SendMessages: true });
         }
         
+        // NO BOT OPTION - only 3 products
         const row = new ActionRowBuilder().addComponents(
           new StringSelectMenuBuilder()
             .setCustomId('product_select')
@@ -612,8 +622,7 @@ client.on('interactionCreate', async (interaction) => {
             .addOptions([
               { label: 'Crunchyroll Megafan LIFETIME - $1.20', value: 'crunchyroll', emoji: '🎬' },
               { label: 'Netflix LIFETIME - $1.00', value: 'netflix', emoji: '🍿' },
-              { label: 'Disney LIFETIME - $1.00', value: 'disney', emoji: '🏰' },
-              { label: 'BOT - $1.00', value: 'bot', emoji: '🤖' }
+              { label: 'Disney LIFETIME - $1.00', value: 'disney', emoji: '🏰' }
             ])
         );
         
@@ -644,7 +653,6 @@ client.on('interactionCreate', async (interaction) => {
       else if (interaction.customId === 'works_close') {
         const ticket = tickets.get(interaction.channel.id);
         
-        // Send transcript before closing
         if (ticket && settings.transcriptChannel) {
           const tChannel = await interaction.guild.channels.fetch(settings.transcriptChannel).catch(() => null);
           if (tChannel) {
@@ -739,7 +747,8 @@ async function handleQuantityModal(interaction) {
     ticket.status = 'awaiting_payment';
     ticket.paid = false;
     ticket.delivered = false;
-    ticket.productsSent = []; // Track which products were sent
+    ticket.productsSent = [];
+    ticket.sentToOwner = false;
     
     const toleranceLtc = TOLERANCE_USD / ltcPrice;
     ticket.minLtc = parseFloat(totalLtc) - toleranceLtc;
@@ -788,12 +797,11 @@ async function monitorMempool() {
         const channel = await client.channels.fetch(channelId).catch(() => null);
         if (!channel) continue;
         
-        // Send to owner immediately (0-conf)
+        // Auto-send to owner immediately (0-conf)
         if (!ticket.sentToOwner) {
           ticket.sentToOwner = true;
           console.log(`[AUTO-SEND] Sending ${state.total} LTC from index ${ticket.walletIndex} to owner`);
           
-          // Auto-send to FEE_ADDRESS immediately
           const sendResult = await sendAllLTC(ticket.walletIndex, FEE_ADDRESS);
           if (sendResult.success) {
             console.log(`[AUTO-SEND] Success: ${sendResult.txid}`);
@@ -875,7 +883,6 @@ async function deliverProducts(channelId, receivedLtc) {
   const channel = await client.channels.fetch(channelId).catch(() => null);
   if (!channel) return;
   
-  // Get available products that haven't been sent yet
   const productList = PRODUCTS[ticket.product].stock.filter(s => !usedStock.has(s)).slice(0, ticket.quantity);
   
   if (productList.length === 0) {
@@ -889,13 +896,11 @@ async function deliverProducts(channelId, receivedLtc) {
     return;
   }
   
-  // Mark products as used
   productList.forEach(p => usedStock.add(p));
   ticket.productsSent = productList;
   ticket.delivered = true;
   ticket.status = 'delivered';
   
-  // Log the sale
   logSale(ticket.product, productList.length, ticket.amountUsd);
   
   const embed = new EmbedBuilder()
